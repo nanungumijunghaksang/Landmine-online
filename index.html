@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>온라인 턴제 지뢰찾기(with gemini)</title>
+    
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    
+    <style>
+        body { 
+            font-family: 'Malgun Gothic', sans-serif; 
+            text-align: center; 
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 30px 10px;
+        }
+        h1 { color: #333; margin-bottom: 10px; }
+        
+        #lobby, #game-area {
+            background: white;
+            max-width: 800px; 
+            margin: 0 auto;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow-x: auto; 
+        }
+        
+        .selector-group {
+            margin-bottom: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .selector-group label {
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .selector-title { width: 100%; text-align: center; margin-top: 0; margin-bottom: 10px; color: #555; font-size: 14px; }
+        
+        button { 
+            padding: 15px 30px; 
+            font-size: 18px; 
+            font-weight: bold;
+            cursor: pointer; 
+            background-color: #4CAF50; 
+            color: white; 
+            border: none; 
+            border-radius: 5px;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #45a049; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        
+        #lobby-status { margin-top: 15px; color: #666; font-size: 15px; }
+        
+        #status { margin: 10px 0; font-size: 22px; font-weight: bold; }
+        #timer-display { font-size: 18px; font-weight: bold; color: #e67e22; margin-bottom: 15px; }
+        
+        /* 인벤토리 (최대 5칸) 스타일 */
+        #item-panel {
+            display: none;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #eef2f5;
+            border-radius: 8px;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .item-slot {
+            width: 130px;
+            height: 45px;
+            background: #dcdcdc;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            color: #888;
+            border: 2px dashed #bbb;
+            box-sizing: border-box;
+        }
+        .item-btn {
+            width: 100%;
+            height: 100%;
+            padding: 0;
+            font-size: 14px;
+            background-color: #8e44ad;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .item-btn:hover { background-color: #732d91; }
+        .item-btn:disabled { background-color: #aaa; cursor: not-allowed; }
+        
+        #board { 
+            display: inline-grid; 
+            gap: 1px; 
+            background-color: #bbb;
+            padding: 4px;
+            border-radius: 5px;
+            margin: 0 auto;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        .cell { 
+            background-color: #e0e0e0; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            cursor: pointer; 
+            font-weight: bold; 
+            user-select: none;
+            border-radius: 2px;
+            box-sizing: border-box;
+        }
+        .cell:hover:not(.revealed) { background-color: #d5d5d5; }
+        .cell.revealed { background-color: #ffffff; cursor: default; }
+        .cell.mine { background-color: #ff4d4d; color: white; }
+        .cell.unrevealed-mine { background-color: #ffb3b3; color: #666; font-size: 0.8em; } 
+        
+        .count-1 { color: blue; }
+        .count-2 { color: green; }
+        .count-3 { color: red; }
+        .count-4 { color: purple; }
+        .count-5 { color: maroon; }
+        
+        .btn-group { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
+        #return-btn { background-color: #007bff; display: none; }
+        #return-btn:hover { background-color: #0056b3; }
+        #surrender-btn { background-color: #dc3545; display: none; }
+        #surrender-btn:hover { background-color: #c82333; }
+    </style>
+</head>
+<body>
+
+    <h1>💣 지뢰찾기 데스매치</h1>
+    <hr style="max-width: 800px; margin-bottom: 30px; border: 0; height: 1px; background: #ccc;">
+    
+    <div id="lobby">
+        <div class="selector-group">
+            <p class="selector-title">▶ 게임 모드 선택 ◀</p>
+            <label><input type="radio" name="mode" value="classic" checked> ⚔️ 일반전 (클래식)</label>
+            <label><input type="radio" name="mode" value="item"> 🎁 아이템전 (랜덤 인벤토리)</label>
+        </div>
+        
+        <div class="selector-group">
+            <p class="selector-title">▶ 난이도 선택 ◀</p>
+            <label><input type="radio" name="difficulty" value="easy" checked> 🟢 초급 (12x12)</label>
+            <label><input type="radio" name="difficulty" value="normal"> 🟡 중급 (18x18)</label>
+            <label><input type="radio" name="difficulty" value="hard"> 🔴 고급 (24x24)</label>
+        </div>
+        
+        <button onclick="joinMatchmaking()">온라인 매칭 시작</button>
+        <p id="lobby-status">원하는 모드와 난이도를 선택하고 매칭을 시작하세요.</p>
+    </div>
+
+    <div id="game-area" style="display: none;">
+        <div id="status">지뢰를 피해 승리 하십시오!</div>
+        <div id="timer-display"></div>
+        
+        <div id="item-panel"></div>
+
+        <div id="board" oncontextmenu="return false;"></div>
+        
+        <div class="btn-group">
+            <button id="surrender-btn" onclick="surrender()">🏳️ 기권하고 나가기</button>
+            <button id="return-btn" onclick="returnToLobby()">🔙 로비로 돌아가기</button>
+        </div>
+    </div>
+
+    <script>
+        // ========================================================
+        // ⚠️ 본인의 파이어베이스 설정을 꼭! 다시 넣어주세요.
+        // ========================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyDinjbtVVFPX-goRNYtJbtsvaHbr9dk4bg",
+            authDomain: "findlandmineonline.firebaseapp.com",
+            databaseURL: "https://findlandmineonline-default-rtdb.firebaseio.com/", 
+            projectId: "findlandmineonline",
+            storageBucket: "findlandmineonline.firebasestorage.app",
+            messagingSenderId: "160701468320",
+            appId: "1:160701468320:web:4b7f7ac2563b88eb6283c5"
+        };
+        // ========================================================
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        const myId = "user_" + Math.random().toString(36).substr(2, 5);
+        let currentRoomId = null;
+        let playerNumber = null; 
+        
+        const SETTINGS = {
+            'easy': { size: 12, mines: 20, name: '초급', cellSize: 30, fontSize: 14 },
+            'normal': { size: 18, mines: 50, name: '중급', cellSize: 25, fontSize: 12 },
+            'hard': { size: 24, mines: 90, name: '고급', cellSize: 20, fontSize: 10 }
+        };
+
+        // 방패(shield) 삭제
+        const ITEM_TYPES = ['scanner', 'wide_scanner', 'detector', 'pass'];
+        const ITEM_NAMES = {
+            'scanner': '🔍 스캐너',
+            'wide_scanner': '🔭 정밀 스캐너',
+            'detector': '🎯 탐지기',
+            'pass': '⏭️ 턴 넘기기'
+        };
+        
+        let currentConfig = null; 
+        let currentTurn = -1;
+        let timerInterval = null;
+        const TURN_TIME_LIMIT = 20;
+
+        let localFlags = new Set();
+        let latestGameData = null;
+
+        function joinMatchmaking() {
+            db.ref('users/' + myId + '/room').remove();
+            localFlags.clear();
+
+            const selectedMode = document.querySelector('input[name="mode"]:checked').value;
+            const selectedDiff = document.querySelector('input[name="difficulty"]:checked').value;
+            const modeName = selectedMode === 'item' ? '아이템전' : '일반전';
+            
+            document.getElementById('lobby-status').innerText = `[${modeName}] ${SETTINGS[selectedDiff].name} 상대방을 찾는 중...`;
+            document.querySelector('#lobby button').disabled = true;
+            document.querySelectorAll('input[type="radio"]').forEach(el => el.disabled = true);
+
+            const queueName = 'matchmaking_queue_' + selectedMode + '_' + selectedDiff;
+            const queueRef = db.ref(queueName);
+            
+            queueRef.once('value').then((snapshot) => {
+                const waitingPlayerId = snapshot.val();
+                
+                if (waitingPlayerId && waitingPlayerId !== myId) {
+                    queueRef.remove();
+                    createRoom(waitingPlayerId, myId, selectedMode, selectedDiff);
+                } else {
+                    queueRef.set(myId);
+                    const myRoomRef = db.ref('users/' + myId + '/room');
+                    myRoomRef.on('value', (roomSnap) => {
+                        const roomId = roomSnap.val();
+                        if (roomId) {
+                            myRoomRef.off();
+                            joinRoom(roomId, 0); 
+                        }
+                    });
+                }
+            });
+        }
+
+        function generateBoard(size, mines) {
+            let board = Array.from({length: size}, () => Array.from({length: size}, () => ({ 
+                mine: false, revealed: false, count: 0
+            })));
+            
+            let placed = 0;
+            while (placed < mines) {
+                let r = Math.floor(Math.random() * size);
+                let c = Math.floor(Math.random() * size);
+                if (!board[r][c].mine) { board[r][c].mine = true; placed++; }
+            }
+            
+            for (let r = 0; r < size; r++) {
+                for (let c = 0; c < size; c++) {
+                    if (board[r][c].mine) continue;
+                    let count = 0;
+                    for (let dr = -1; dr <= 1; dr++) {
+                        for (let dc = -1; dc <= 1; dc++) {
+                            if (r+dr >= 0 && r+dr < size && c+dc >= 0 && c+dc < size) {
+                                if (board[r+dr][c+dc].mine) count++;
+                            }
+                        }
+                    }
+                    board[r][c].count = count;
+                }
+            }
+            return board;
+        }
+
+        function createRoom(player1Id, player2Id, mode, difficulty) {
+            const roomId = "room_" + new Date().getTime();
+            const config = SETTINGS[difficulty];
+            const initialBoard = generateBoard(config.size, config.mines);
+
+            const roomData = {
+                players: [player1Id, player2Id],
+                board: initialBoard,
+                mode: mode,
+                difficulty: difficulty,
+                turn: 0, 
+                status: 'playing',
+                loser: -1,
+                reason: '',
+                itemUsedThisTurn: false,
+                playerItems: mode === 'item' ? {
+                    0: [ ITEM_TYPES[Math.floor(Math.random() * ITEM_TYPES.length)] ],
+                    1: []
+                } : null
+            };
+
+            db.ref('rooms/' + roomId).set(roomData).then(() => {
+                db.ref('users/' + player1Id + '/room').set(roomId);
+                joinRoom(roomId, 1);
+            });
+        }
+
+        function joinRoom(roomId, myPlayerNumber) {
+            currentRoomId = roomId;
+            playerNumber = myPlayerNumber;
+            
+            document.getElementById('lobby').style.display = 'none';
+            document.getElementById('game-area').style.display = 'block';
+            document.getElementById('return-btn').style.display = 'none';
+            document.getElementById('surrender-btn').style.display = 'inline-block';
+
+            db.ref('rooms/' + currentRoomId).onDisconnect().update({
+                status: 'game_over',
+                loser: playerNumber,
+                reason: 'disconnect'
+            });
+
+            db.ref('rooms/' + roomId).on('value', (snapshot) => {
+                const gameData = snapshot.val();
+                if (!gameData) return;
+                
+                latestGameData = gameData;
+                currentConfig = SETTINGS[gameData.difficulty];
+                updateUI(gameData);
+            });
+        }
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            let timeLeft = TURN_TIME_LIMIT;
+            document.getElementById('timer-display').innerText = `⏱ 남은 시간: ${timeLeft}초`;
+            
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                document.getElementById('timer-display').innerText = `⏱ 남은 시간: ${timeLeft}초`;
+                
+                if (timeLeft <= 0) {
+                    clearInterval(timerInterval);
+                    db.ref(`rooms/${currentRoomId}`).update({
+                        status: 'game_over',
+                        loser: currentTurn,
+                        reason: 'timeout'
+                    });
+                }
+            }, 1000);
+        }
+
+        function updateUI(gameData) {
+            const statusDiv = document.getElementById('status');
+            const boardDiv = document.getElementById('board');
+            const timerDiv = document.getElementById('timer-display');
+            const itemPanel = document.getElementById('item-panel');
+            
+            boardDiv.style.gridTemplateColumns = `repeat(${currentConfig.size}, ${currentConfig.cellSize}px)`;
+            
+            // 인벤토리(아이템 슬롯) 렌더링
+            itemPanel.innerHTML = '';
+            if (gameData.mode === 'item') {
+                itemPanel.style.display = 'flex';
+                let myItems = gameData.playerItems ? (gameData.playerItems[playerNumber] || []) : [];
+                if (!Array.isArray(myItems)) myItems = Object.values(myItems);
+
+                const hasUsedItemThisTurn = gameData.itemUsedThisTurn;
+
+                for (let i = 0; i < 5; i++) {
+                    const slot = document.createElement('div');
+                    slot.className = 'item-slot';
+                    
+                    if (i < myItems.length) {
+                        const itemType = myItems[i];
+                        const btn = document.createElement('button');
+                        btn.className = 'item-btn';
+                        btn.innerText = ITEM_NAMES[itemType];
+                        
+                        btn.disabled = (
+                            gameData.turn !== playerNumber || 
+                            gameData.status !== 'playing' || 
+                            hasUsedItemThisTurn
+                        );
+
+                        btn.onclick = () => useItem(i, itemType);
+                        slot.appendChild(btn);
+                    } else {
+                        slot.innerText = '빈 슬롯';
+                    }
+                    itemPanel.appendChild(slot);
+                }
+            } else {
+                itemPanel.style.display = 'none';
+            }
+
+            // 상태 표시
+            if (gameData.status === 'game_over') {
+                clearInterval(timerInterval);
+                timerDiv.innerText = "";
+                
+                document.getElementById('surrender-btn').style.display = 'none';
+                document.getElementById('return-btn').style.display = 'inline-block';
+
+                db.ref('rooms/' + currentRoomId).onDisconnect().cancel();
+
+                if (gameData.loser === playerNumber) {
+                    if (gameData.reason === 'timeout') statusDiv.innerText = "⏰ 시간 초과! 패배하셨습니다.";
+                    else if (gameData.reason === 'disconnect') statusDiv.innerText = "🏃 기권/탈주하여 패배 처리되었습니다.";
+                    else statusDiv.innerText = "💥 콰아앙! 지뢰를 밟아 패배하셨습니다.";
+                    statusDiv.style.color = "#ff4d4d";
+                } else {
+                    if (gameData.reason === 'timeout') statusDiv.innerText = "🎉 상대방의 시간 초과! 승리하셨습니다!";
+                    else if (gameData.reason === 'disconnect') statusDiv.innerText = "🎉 상대방이 도망갔습니다! 기권승!";
+                    else statusDiv.innerText = "🎉 생존 성공! 상대방이 지뢰를 밟았습니다!";
+                    statusDiv.style.color = "#4CAF50";
+                }
+            } else {
+                if (currentTurn !== gameData.turn) {
+                    currentTurn = gameData.turn;
+                    startTimer();
+                }
+
+                if (gameData.turn === playerNumber) {
+                    statusDiv.innerText = "👉 당신의 턴입니다!";
+                    statusDiv.style.color = "#007bff";
+                } else {
+                    statusDiv.innerText = "⏳ 상대방이 고민 중입니다...";
+                    statusDiv.style.color = "#666";
+                }
+            }
+
+            // 보드 렌더링
+            boardDiv.innerHTML = '';
+            for (let r = 0; r < currentConfig.size; r++) {
+                for (let c = 0; c < currentConfig.size; c++) {
+                    const cellData = gameData.board[r][c];
+                    const cellDiv = document.createElement('div');
+                    cellDiv.className = 'cell';
+                    cellDiv.style.width = currentConfig.cellSize + 'px';
+                    cellDiv.style.height = currentConfig.cellSize + 'px';
+                    cellDiv.style.fontSize = currentConfig.fontSize + 'px';
+                    
+                    const cellKey = `${r}_${c}`;
+
+                    if (cellData.revealed) {
+                        cellDiv.classList.add('revealed');
+                        if (cellData.mine) {
+                            cellDiv.classList.add('mine');
+                            cellDiv.innerText = '💥';
+                        } else if (cellData.count > 0) {
+                            cellDiv.innerText = cellData.count;
+                            cellDiv.classList.add('count-' + cellData.count);
+                        }
+                    } else {
+                        if (gameData.status === 'game_over' && cellData.mine) {
+                            cellDiv.classList.add('unrevealed-mine');
+                            cellDiv.innerText = '💣';
+                        } 
+                        // 로컬 깃발 (내가 우클릭했거나, 탐지기 아이템으로 찾은 지뢰)
+                        else if (localFlags.has(cellKey)) {
+                            cellDiv.innerText = '🚩';
+                        }
+
+                        if (gameData.status === 'playing') {
+                            if (gameData.turn === playerNumber) {
+                                cellDiv.onclick = () => {
+                                    if (!localFlags.has(cellKey)) {
+                                        clickCell(r, c, gameData);
+                                    }
+                                };
+                            }
+
+                            cellDiv.oncontextmenu = (e) => {
+                                e.preventDefault(); 
+                                if (localFlags.has(cellKey)) localFlags.delete(cellKey);
+                                else localFlags.add(cellKey);
+                                
+                                updateUI(latestGameData);
+                            };
+                        }
+                    }
+                    boardDiv.appendChild(cellDiv);
+                }
+            }
+        }
+
+        // 턴 넘기기 공통 로직
+        function passTurn(currentData, updates, currentPlayer) {
+            let nextPlayer = currentPlayer === 0 ? 1 : 0;
+            updates['turn'] = nextPlayer;
+            updates['itemUsedThisTurn'] = false; 
+            
+            if (currentData.mode === 'item') {
+                let nextItems = currentData.playerItems ? (currentData.playerItems[nextPlayer] || []) : [];
+                if (!Array.isArray(nextItems)) nextItems = Object.values(nextItems);
+                
+                if (nextItems.length < 5) {
+                    nextItems.push(ITEM_TYPES[Math.floor(Math.random() * ITEM_TYPES.length)]);
+                }
+                updates[`playerItems/${nextPlayer}`] = nextItems.length > 0 ? nextItems : null;
+            }
+        }
+
+        function applyReveal(r, c, gameData, updates) {
+            if ((gameData.difficulty === 'normal' || gameData.difficulty === 'hard') && gameData.board[r][c].count === 0) {
+                let localReveals = {}; 
+                function revealEmpty(row, col) {
+                    if (row < 0 || row >= currentConfig.size || col < 0 || col >= currentConfig.size) return;
+                    if (gameData.board[row][col].revealed || localReveals[`${row}_${col}`]) return;
+                    
+                    localReveals[`${row}_${col}`] = true;
+                    updates[`board/${row}/${col}/revealed`] = true;
+
+                    if (gameData.board[row][col].count === 0 && !gameData.board[row][col].mine) {
+                        for (let dr = -1; dr <= 1; dr++) {
+                            for (let dc = -1; dc <= 1; dc++) {
+                                revealEmpty(row + dr, col + dc);
+                            }
+                        }
+                    }
+                }
+                revealEmpty(r, c);
+            } else {
+                updates[`board/${r}/${c}/revealed`] = true;
+            }
+        }
+
+        function clickCell(r, c, gameData) {
+            let updates = {};
+            const isMine = gameData.board[r][c].mine;
+
+            if (isMine) {
+                // 방패가 삭제되었으므로 지뢰를 밟으면 즉시 패배합니다.
+                updates[`board/${r}/${c}/revealed`] = true;
+                updates[`status`] = 'game_over';
+                updates[`loser`] = playerNumber;
+                updates[`reason`] = 'mine';
+            } else {
+                applyReveal(r, c, gameData, updates);
+                passTurn(gameData, updates, playerNumber);
+            }
+
+            db.ref(`rooms/${currentRoomId}`).update(updates);
+        }
+
+        function getSafes() {
+            let safes = [];
+            for(let r=0; r<currentConfig.size; r++){
+                for(let c=0; c<currentConfig.size; c++){
+                    if(!latestGameData.board[r][c].mine && !latestGameData.board[r][c].revealed) safes.push({r,c});
+                }
+            }
+            return safes;
+        }
+
+        // 상대에게 보이지 않기 위해, 이미 '나만의 깃발(로컬 깃발)'이 꽂힌 곳은 탐지기 대상에서 제외합니다.
+        function getHiddenMines() {
+            let mines = [];
+            for(let r=0; r<currentConfig.size; r++){
+                for(let c=0; c<currentConfig.size; c++){
+                    if(latestGameData.board[r][c].mine && !latestGameData.board[r][c].revealed && !localFlags.has(`${r}_${c}`)) {
+                        mines.push({r,c});
+                    }
+                }
+            }
+            return mines;
+        }
+
+        // 아이템 사용 처리
+        function useItem(index, itemName) {
+            if (currentTurn !== playerNumber || latestGameData.status !== 'playing') return;
+            if (latestGameData.itemUsedThisTurn) return;
+            
+            let items = latestGameData.playerItems ? (latestGameData.playerItems[playerNumber] || []) : [];
+            if (!Array.isArray(items)) items = Object.values(items);
+            
+            if (items[index] !== itemName) return; 
+            
+            // 아이템 삭제
+            items.splice(index, 1);
+            
+            let updates = {};
+            updates[`playerItems/${playerNumber}`] = items.length > 0 ? items : null;
+            updates[`itemUsedThisTurn`] = true;
+
+            if (itemName === 'scanner') {
+                let safes = getSafes();
+                if(safes.length > 0){
+                    let target = safes[Math.floor(Math.random()*safes.length)];
+                    applyReveal(target.r, target.c, latestGameData, updates);
+                }
+            }
+            else if (itemName === 'wide_scanner') {
+                let safes = getSafes();
+                safes.sort(() => 0.5 - Math.random());
+                let count = Math.min(3, safes.length);
+                for(let i=0; i<count; i++){
+                    applyReveal(safes[i].r, safes[i].c, latestGameData, updates);
+                }
+            }
+            else if (itemName === 'detector') {
+                let mines = getHiddenMines();
+                if(mines.length > 0){
+                    let target = mines[Math.floor(Math.random()*mines.length)];
+                    // Firebase(서버)에 업데이트하지 않고 나만의 로컬 깃발 데이터에만 추가
+                    localFlags.add(`${target.r}_${target.c}`);
+                }
+            }
+            else if (itemName === 'pass') {
+                passTurn(latestGameData, updates, playerNumber);
+            }
+
+            db.ref(`rooms/${currentRoomId}`).update(updates).then(() => {
+                // 탐지기 아이템을 썼을 때, 로컬 깃발이 즉시 보이도록 화면 새로고침
+                if(itemName === 'detector') updateUI(latestGameData);
+            });
+        }
+
+        function surrender() {
+            if(confirm("정말 기권하시겠습니까?")) {
+                db.ref(`rooms/${currentRoomId}`).update({
+                    status: 'game_over',
+                    loser: playerNumber,
+                    reason: 'disconnect'
+                });
+            }
+        }
+
+        function returnToLobby() {
+            if (currentRoomId) {
+                db.ref('rooms/' + currentRoomId).off();
+            }
+            
+            const selectedMode = document.querySelector('input[name="mode"]:checked').value;
+            const selectedDiff = document.querySelector('input[name="difficulty"]:checked').value;
+            const queueName = 'matchmaking_queue_' + selectedMode + '_' + selectedDiff;
+            
+            db.ref(queueName).once('value', snapshot => {
+                if(snapshot.val() === myId) db.ref(queueName).remove();
+            });
+
+            db.ref('users/' + myId + '/room').remove();
+            localFlags.clear();
+
+            currentRoomId = null;
+            playerNumber = null;
+            currentTurn = -1;
+            clearInterval(timerInterval);
+            
+            document.querySelector('#lobby button').disabled = false;
+            document.querySelectorAll('input[type="radio"]').forEach(el => el.disabled = false);
+            document.getElementById('lobby-status').innerText = "원하는 모드와 난이도를 선택하고 매칭을 시작하세요.";
+            
+            document.getElementById('game-area').style.display = 'none';
+            document.getElementById('lobby').style.display = 'block';
+        }
+    </script>
+</body>
+</html>
