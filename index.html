@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>온라인 턴제 지뢰찾기(with gemini)</title>
+    <title>온라인 턴제 지뢰찾기 데스매치</title>
     
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
     
     <style>
         body { 
@@ -64,7 +65,7 @@
         #status { margin: 10px 0; font-size: 22px; font-weight: bold; }
         #timer-display { font-size: 18px; font-weight: bold; color: #e67e22; margin-bottom: 15px; }
         
-        /* 인벤토리 (최대 5칸) 스타일 */
+        /* 인벤토리 스타일 */
         #item-panel {
             display: none;
             margin-bottom: 15px;
@@ -163,16 +164,15 @@
             <label><input type="radio" name="difficulty" value="hard"> 🔴 고급 (24x24)</label>
         </div>
         
-        <button onclick="joinMatchmaking()">온라인 매칭 시작</button>
+        <button id="match-btn" onclick="joinMatchmaking()" disabled>서버에 연결 중입니다...</button>
         <p id="lobby-status">원하는 모드와 난이도를 선택하고 매칭을 시작하세요.</p>
     </div>
 
     <div id="game-area" style="display: none;">
-        <div id="status">지뢰를 피해 승리 하십시오!</div>
+        <div id="status">게임 준비 중...</div>
         <div id="timer-display"></div>
         
         <div id="item-panel"></div>
-
         <div id="board" oncontextmenu="return false;"></div>
         
         <div class="btn-group">
@@ -198,18 +198,37 @@
 
         firebase.initializeApp(firebaseConfig);
         const db = firebase.database();
+        const auth = firebase.auth();
 
-        const myId = "user_" + Math.random().toString(36).substr(2, 5);
+        let myId = null;
         let currentRoomId = null;
         let playerNumber = null; 
         
+        // --- 익명 로그인 처리 ---
+        auth.signInAnonymously().catch((error) => {
+            console.error("익명 로그인 실패:", error);
+            document.getElementById('lobby-status').innerText = "서버 연결에 실패했습니다. 페이지를 새로고침 해주세요.";
+        });
+
+        auth.onAuthStateChanged((user) => {
+            if (user) {
+                myId = user.uid; // 고유하고 안전한 유저 ID 할당
+                console.log("보안 접속 완료! 내 UID:", myId);
+                
+                // 로그인 성공 후 매칭 버튼 활성화
+                const matchBtn = document.getElementById('match-btn');
+                matchBtn.disabled = false;
+                matchBtn.innerText = "온라인 매칭 시작";
+            }
+        });
+        // ------------------------
+
         const SETTINGS = {
             'easy': { size: 12, mines: 20, name: '초급', cellSize: 30, fontSize: 14 },
             'normal': { size: 18, mines: 50, name: '중급', cellSize: 25, fontSize: 12 },
             'hard': { size: 24, mines: 90, name: '고급', cellSize: 20, fontSize: 10 }
         };
 
-        // 방패(shield) 삭제
         const ITEM_TYPES = ['scanner', 'wide_scanner', 'detector', 'pass'];
         const ITEM_NAMES = {
             'scanner': '🔍 스캐너',
@@ -227,6 +246,11 @@
         let latestGameData = null;
 
         function joinMatchmaking() {
+            if (!myId) {
+                alert("서버와 연결 중입니다. 잠시만 기다려주세요!");
+                return;
+            }
+
             db.ref('users/' + myId + '/room').remove();
             localFlags.clear();
 
@@ -235,7 +259,7 @@
             const modeName = selectedMode === 'item' ? '아이템전' : '일반전';
             
             document.getElementById('lobby-status').innerText = `[${modeName}] ${SETTINGS[selectedDiff].name} 상대방을 찾는 중...`;
-            document.querySelector('#lobby button').disabled = true;
+            document.getElementById('match-btn').disabled = true;
             document.querySelectorAll('input[type="radio"]').forEach(el => el.disabled = true);
 
             const queueName = 'matchmaking_queue_' + selectedMode + '_' + selectedDiff;
@@ -370,7 +394,7 @@
             
             boardDiv.style.gridTemplateColumns = `repeat(${currentConfig.size}, ${currentConfig.cellSize}px)`;
             
-            // 인벤토리(아이템 슬롯) 렌더링
+            // 인벤토리 렌더링
             itemPanel.innerHTML = '';
             if (gameData.mode === 'item') {
                 itemPanel.style.display = 'flex';
@@ -469,7 +493,6 @@
                             cellDiv.classList.add('unrevealed-mine');
                             cellDiv.innerText = '💣';
                         } 
-                        // 로컬 깃발 (내가 우클릭했거나, 탐지기 아이템으로 찾은 지뢰)
                         else if (localFlags.has(cellKey)) {
                             cellDiv.innerText = '🚩';
                         }
@@ -497,7 +520,7 @@
             }
         }
 
-        // 턴 넘기기 공통 로직
+        // 턴 넘기기
         function passTurn(currentData, updates, currentPlayer) {
             let nextPlayer = currentPlayer === 0 ? 1 : 0;
             updates['turn'] = nextPlayer;
@@ -543,7 +566,6 @@
             const isMine = gameData.board[r][c].mine;
 
             if (isMine) {
-                // 방패가 삭제되었으므로 지뢰를 밟으면 즉시 패배합니다.
                 updates[`board/${r}/${c}/revealed`] = true;
                 updates[`status`] = 'game_over';
                 updates[`loser`] = playerNumber;
@@ -566,7 +588,6 @@
             return safes;
         }
 
-        // 상대에게 보이지 않기 위해, 이미 '나만의 깃발(로컬 깃발)'이 꽂힌 곳은 탐지기 대상에서 제외합니다.
         function getHiddenMines() {
             let mines = [];
             for(let r=0; r<currentConfig.size; r++){
@@ -579,7 +600,7 @@
             return mines;
         }
 
-        // 아이템 사용 처리
+        // 아이템 사용
         function useItem(index, itemName) {
             if (currentTurn !== playerNumber || latestGameData.status !== 'playing') return;
             if (latestGameData.itemUsedThisTurn) return;
@@ -589,7 +610,6 @@
             
             if (items[index] !== itemName) return; 
             
-            // 아이템 삭제
             items.splice(index, 1);
             
             let updates = {};
@@ -615,7 +635,6 @@
                 let mines = getHiddenMines();
                 if(mines.length > 0){
                     let target = mines[Math.floor(Math.random()*mines.length)];
-                    // Firebase(서버)에 업데이트하지 않고 나만의 로컬 깃발 데이터에만 추가
                     localFlags.add(`${target.r}_${target.c}`);
                 }
             }
@@ -624,7 +643,6 @@
             }
 
             db.ref(`rooms/${currentRoomId}`).update(updates).then(() => {
-                // 탐지기 아이템을 썼을 때, 로컬 깃발이 즉시 보이도록 화면 새로고침
                 if(itemName === 'detector') updateUI(latestGameData);
             });
         }
@@ -660,7 +678,10 @@
             currentTurn = -1;
             clearInterval(timerInterval);
             
-            document.querySelector('#lobby button').disabled = false;
+            const matchBtn = document.getElementById('match-btn');
+            matchBtn.disabled = false;
+            matchBtn.innerText = "온라인 매칭 시작";
+            
             document.querySelectorAll('input[type="radio"]').forEach(el => el.disabled = false);
             document.getElementById('lobby-status').innerText = "원하는 모드와 난이도를 선택하고 매칭을 시작하세요.";
             
