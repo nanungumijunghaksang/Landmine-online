@@ -204,7 +204,6 @@
         let currentRoomId = null;
         let playerNumber = null; 
         
-        // --- 익명 로그인 처리 ---
         auth.signInAnonymously().catch((error) => {
             console.error("익명 로그인 실패:", error);
             document.getElementById('lobby-status').innerText = "서버 연결에 실패했습니다. 페이지를 새로고침 해주세요.";
@@ -212,16 +211,14 @@
 
         auth.onAuthStateChanged((user) => {
             if (user) {
-                myId = user.uid; // 고유하고 안전한 유저 ID 할당
+                myId = user.uid;
                 console.log("보안 접속 완료! 내 UID:", myId);
                 
-                // 로그인 성공 후 매칭 버튼 활성화
                 const matchBtn = document.getElementById('match-btn');
                 matchBtn.disabled = false;
                 matchBtn.innerText = "온라인 매칭 시작";
             }
         });
-        // ------------------------
 
         const SETTINGS = {
             'easy': { size: 12, mines: 20, name: '초급', cellSize: 30, fontSize: 14 },
@@ -272,11 +269,17 @@
                     queueRef.remove();
                     createRoom(waitingPlayerId, myId, selectedMode, selectedDiff);
                 } else {
-                    queueRef.set(myId);
+                    queueRef.set(myId).then(() => {
+                        // ✨ 유령 대전 방지 1: 매칭 대기 중 창을 닫으면 대기열에서 자동 삭제
+                        queueRef.onDisconnect().remove();
+                    });
+
                     const myRoomRef = db.ref('users/' + myId + '/room');
                     myRoomRef.on('value', (roomSnap) => {
                         const roomId = roomSnap.val();
                         if (roomId) {
+                            // ✨ 유령 대전 방지 2: 방에 입장 성공 시 자동 삭제 취소 (더 이상 대기열에 없음)
+                            queueRef.onDisconnect().cancel();
                             myRoomRef.off();
                             joinRoom(roomId, 0); 
                         }
@@ -350,6 +353,7 @@
             document.getElementById('return-btn').style.display = 'none';
             document.getElementById('surrender-btn').style.display = 'inline-block';
 
+            // 인게임 플레이 도중 연결이 끊기면 즉시 기권 처리
             db.ref('rooms/' + currentRoomId).onDisconnect().update({
                 status: 'game_over',
                 loser: playerNumber,
@@ -667,7 +671,10 @@
             const queueName = 'matchmaking_queue_' + selectedMode + '_' + selectedDiff;
             
             db.ref(queueName).once('value', snapshot => {
-                if(snapshot.val() === myId) db.ref(queueName).remove();
+                if(snapshot.val() === myId) {
+                    db.ref(queueName).remove();
+                    db.ref(queueName).onDisconnect().cancel(); // 큐에서 명시적으로 나갈 때도 안전하게 onDisconnect 취소
+                }
             });
 
             db.ref('users/' + myId + '/room').remove();
